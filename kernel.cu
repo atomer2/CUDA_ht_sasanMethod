@@ -80,16 +80,16 @@ __device__ void gpuImfilter(float im[][42], float om[][32], float filter[][11], 
 
 
 
-//这个内核的运行时间太长，还是得修改在注册表修改下TDR
+//NOTE:这个内核的运行时间太长，要在注册表修改下TDR,否则无法执行完就会错误退出了
 //详情请看网址 http://stackoverflow.com/questions/497685/cuda-apps-time-out-fail-after-several-seconds-how-to-work-around-this
-__global__ void sasanMethod(const float		*inputImage,
-                            float			*outputImage,
-                            size_t			width,
-                            size_t			height,
-                            size_t			pitch,
-                            const float		*filter,
-                            size_t			filterPitch,
-                            size_t			filterSize,
+__global__ void sasanMethod(const float     *inputImage,
+                            float           *outputImage,
+                            size_t          width,
+                            size_t          height,
+                            size_t          pitch,
+                            const float     *filter,
+                            size_t          filterPitch,
+                            size_t          filterSize,
                             size_t          phase) {
 
     __shared__  float paddingImage[42][42];
@@ -137,7 +137,7 @@ __global__ void sasanMethod(const float		*inputImage,
     }
     //将相应输入的二维图像的像素点拷贝入共享内存
 
-    blockImage[threadIdx.y][threadIdx.x] = *((float *)((char*)inputImage + (by * blockDim.y + threadIdx.y) * pitch) + bx * blockDim.x + threadIdx.x);
+    tmpImage[threadIdx.y][threadIdx.x] = blockImage[threadIdx.y][threadIdx.x] = *((float *)((char*)inputImage + (by * blockDim.y + threadIdx.y) * pitch) + bx * blockDim.x + threadIdx.x);
     __syncthreads();
 
     size_t i = threadIdx.y * blockDim.x + threadIdx.x;
@@ -145,25 +145,25 @@ __global__ void sasanMethod(const float		*inputImage,
     __syncthreads();
     sumReduce(reduceArray);
     size_t ndots = reduceArray[0];
-    //这里必须要加一个同步才行
-     __syncthreads();
+    //这里必须要加一个同步才行，否则无法保证reduceArray[0]的值的正确性
+    __syncthreads();
 
     for(size_t m = 0; m < ndots; m++) {
 
         size_t i = threadIdx.y * blockDim.x + threadIdx.x;
-        reduceArray[i] = blockImage[threadIdx.y][threadIdx.x];
+        reduceArray[i] = tmpImage[threadIdx.y][threadIdx.x];
 
         __syncthreads();
         maxReduce(reduceArray);
-        if (blockImage[threadIdx.y][threadIdx.x] == reduceArray[0]) {
+        if (tmpImage[threadIdx.y][threadIdx.x] == reduceArray[0]) {
             paddingImage[threadIdx.y + 5][threadIdx.x + 5] = 1.0f;
-			//如果有同时存在相同大小的点呢？
+            //如果有同时存在相同大小的点呢？
         }
         __syncthreads();
         //paddingEdgeAndCorner((float**)paddingImage);
         gpuImfilter(paddingImage, tmpImage, gausFilter, 11, 11);
 
-        blockImage[threadIdx.y][threadIdx.x] -= tmpImage[threadIdx.y][threadIdx.x];//+ paddingImage[threadIdx.y+5][threadIdx.x+5];
+        tmpImage[threadIdx.y][threadIdx.x] = blockImage[threadIdx.y][threadIdx.x] - tmpImage[threadIdx.y][threadIdx.x];
 
         __syncthreads();
     }
@@ -378,7 +378,8 @@ int main() {
         float* gpuFilter;
         size_t filterPitch;
         /////////////////careful!
-        //gausFilter[5][5] = 1.0f;
+        //这样做是为了最大灰度值的点不会重复
+        gausFilter[5][5] = 1.0f;
         /////////////////
         cudaMallocPitch(&gpuFilter, &filterPitch, filterSize * sizeof(float), filterSize);
         if (cudaStatus != cudaSuccess) {
@@ -398,7 +399,7 @@ int main() {
 
         }
 
-        //GT940M MaxThreadsPerBlock=1024
+        //GT940M MaxThreadsPerBlock==1024
         //////////////////////////
         size_t blockSize = 32;
         //////////////////////////
@@ -455,6 +456,9 @@ int main() {
     getchar();
     return 0;
 }
+
+
+
 
 
 
